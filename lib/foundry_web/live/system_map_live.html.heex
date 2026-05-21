@@ -1,0 +1,672 @@
+<%= if @loading_visible do %>
+<div
+  id="project-loader"
+  phx-hook="ProjectLoader"
+  data-loading={to_string(@loading)}
+  class={["fixed inset-0 min-h-screen overflow-hidden z-[9999] transition-opacity duration-500 ease-out", @loading && "opacity-100 pointer-events-none", !@loading && "opacity-0 pointer-events-none"]}
+  style="background:radial-gradient(circle at top,rgba(253,79,0,0.1),transparent 32%),#050408;"
+>
+    <canvas id="project-loader-canvas" class="fixed inset-0 z-0 h-screen w-screen pointer-events-none opacity-0 transition-opacity duration-500 ease-in" style="filter:saturate(190%) brightness(150%) contrast(108%);display:block;"></canvas>
+    <main id="project-loader-stage" class="absolute inset-0 z-10 flex min-h-screen items-center justify-center px-6 py-8">
+      <section class="w-full max-w-[46rem] text-center">
+        <img class="mx-auto block h-[clamp(5rem,12vw,8.5rem)] w-auto" src={~p"/images/foundry-logo.png"} alt="Foundry" />
+        <p class="mt-4 text-[0.72rem] font-semibold uppercase tracking-[0.38em] text-white/48">Project Launch</p>
+        <p class="mt-3.5 text-base font-semibold uppercase tracking-[0.08em] text-white"><%= format_loader_state(@loading_state, @loading_step) %></p>
+        <h1 class="mt-4 text-[clamp(2rem,4vw,2.85rem)] font-semibold leading-tight text-white">
+          <%= if @loading_state == :failed, do: "Project launch failed", else: "Preparing project…" %>
+        </h1>
+        <p class="mx-auto mt-4 max-w-[34rem] text-base leading-relaxed text-white/72">
+          <%= @loading_error || @loading_message || "Foundry is getting the selected project ready." %>
+        </p>
+        <pre id="project-loader-log" class="mx-auto mt-8 max-w-[42rem] max-h-64 overflow-auto rounded-3xl border border-white/8 bg-white/4 p-4 text-[0.76rem] leading-relaxed text-white/64 backdrop-blur-sm whitespace-pre-wrap break-words"><%= @loading_logs %></pre>
+      </section>
+    </main>
+</div>
+<script>
+  (() => {
+    const scriptEl = document.currentScript
+    const root = scriptEl?.previousElementSibling
+
+    if (!root || root.dataset.inlineBooted === "true") return
+
+    root.dataset.inlineBooted = "true"
+
+    const canvasEl = root.querySelector("#project-loader-canvas")
+    const stageEl = root.querySelector("#project-loader-stage")
+    const logoEl = root.querySelector("#project-loader-stage img")
+    const cleanupFns = []
+
+    const sizeCanvas = () => {
+      if (canvasEl) {
+        canvasEl.width = window.innerWidth
+        canvasEl.height = window.innerHeight
+      }
+    }
+
+    const anchorRect = () => {
+      if (logoEl) {
+        const rect = logoEl.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0) return rect
+      }
+
+      if (stageEl) {
+        const rect = stageEl.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0) {
+          return {
+            left: rect.left + rect.width * 0.35,
+            top: rect.top + rect.height * 0.32,
+            width: rect.width * 0.3,
+            height: rect.height * 0.18
+          }
+        }
+      }
+
+      return null
+    }
+
+    const loadPatchedWebGLFluid = async () => {
+      if (window.__foundryPatchedWebGLFluid === true && typeof window.WebGLFluid === "function") return
+
+      const response = await fetch("https://cdn.jsdelivr.net/npm/webgl-fluid@0.3.0/dist/webgl-fluid.umd.js")
+      let source = await response.text()
+
+      source = source.replace("o.color=it()", "o.color=p.SPLAT_COLOR||it()")
+      source = source.replace("N.forEach(s=>{s.color=it()})", "N.forEach(s=>{s.color=p.SPLAT_COLOR||it()})")
+      source = source.replace(
+        "const a=it();a.r*=10,a.g*=10,a.b*=10;",
+        "const a=p.SPLAT_COLOR?{...p.SPLAT_COLOR}:it();if(!p.SPLAT_COLOR){a.r*=10,a.g*=10,a.b*=10;}"
+      )
+
+      window.eval(source)
+      window.__foundryPatchedWebGLFluid = true
+    }
+
+    const startFire = async () => {
+      if (!canvasEl || root.dataset.inlineFluidStarted === "true") return true
+
+      try {
+        await loadPatchedWebGLFluid()
+        sizeCanvas()
+
+        window.WebGLFluid(canvasEl, {
+          TRIGGER: "hover",
+          IMMEDIATE: false,
+          AUTO: false,
+          SIM_RESOLUTION: 128,
+          DYE_RESOLUTION: 1024,
+          DENSITY_DISSIPATION: 0.97,
+          VELOCITY_DISSIPATION: 0.96,
+          PRESSURE: 0.8,
+          CURL: 340,
+          SPLAT_RADIUS: 0.14,
+          SPLAT_FORCE: 4820,
+          SHADING: true,
+          SPLAT_COLOR: { r: 1.65, g: 0.34, b: 0.03 },
+          COLORFUL: false,
+          TRANSPARENT: true,
+          BLOOM: true,
+          BLOOM_ITERATIONS: 8,
+          BLOOM_RESOLUTION: 256,
+          BLOOM_INTENSITY: 0.18,
+          BLOOM_THRESHOLD: 0.7,
+          SUNRAYS: false
+        })
+
+        root.dataset.inlineFluidStarted = "true"
+        window.setTimeout(() => {
+          canvasEl.style.opacity = "1"
+        }, 100)
+
+        let time = 0
+        let pointerPrimed = false
+
+        const fireTimer = window.setInterval(() => {
+          if (!document.body.contains(root)) {
+            window.clearInterval(fireTimer)
+            return
+          }
+
+          const rect = anchorRect()
+          if (!rect) return
+
+          time += 0.13
+          const centerX = rect.left + rect.width / 2
+          const spread = rect.width * 0.08
+          const startX = centerX + Math.sin(time) * spread + Math.sin(time * 1.7) * (spread * 0.15)
+          const startY = rect.top + rect.height * 0.8
+          const endY = startY - 7
+
+          if (!pointerPrimed) {
+            canvasEl.dispatchEvent(new MouseEvent("mousedown", { clientX: startX, clientY: startY, bubbles: true }))
+            pointerPrimed = true
+          }
+
+          canvasEl.dispatchEvent(new MouseEvent("mousemove", { clientX: startX, clientY: startY, bubbles: true }))
+          canvasEl.dispatchEvent(new MouseEvent("mousemove", { clientX: startX + (Math.random() - 0.5) * 0.6, clientY: endY, bubbles: true }))
+        }, 60)
+
+        cleanupFns.push(() => window.clearInterval(fireTimer))
+        return true
+      } catch (_error) {
+        canvasEl.remove()
+        return true
+      }
+    }
+
+    sizeCanvas()
+    window.addEventListener("resize", sizeCanvas)
+    cleanupFns.push(() => window.removeEventListener("resize", sizeCanvas))
+
+    let attempts = 0
+    const retryStart = async () => {
+      if (!document.body.contains(root)) return
+      if (await startFire()) return
+      if (attempts >= 40) return
+      attempts += 1
+      window.setTimeout(() => void retryStart(), 50)
+    }
+
+    void retryStart()
+    window.requestAnimationFrame(() => void retryStart())
+
+    const observer = new MutationObserver(() => {
+      if (document.body.contains(root)) return
+      cleanupFns.forEach((fn) => fn())
+      observer.disconnect()
+    })
+
+    observer.observe(document.body, { childList: true, subtree: true })
+  })()
+</script>
+<% end %>
+
+<%= if not @loading do %>
+  <div
+    class="fm-workspace relative flex h-screen w-full overflow-hidden bg-base-100"
+    data-theme="dark"
+  >
+  <aside
+    class="fm-sidebar absolute inset-y-0 left-0 z-30 flex h-screen min-w-[160px] max-w-[400px] select-none flex-col overflow-hidden border border-white/10 bg-[color:color-mix(in_oklch,var(--color-base-200)_52%,transparent)] shadow-[0_20px_60px_rgba(0,0,0,0.28)] backdrop-blur-2xl"
+    id="fm-sidebar"
+    style={panel_width_style("--foundry-sidebar-width", true, 240)}
+  >
+    <%!-- <div class="flex shrink-0 items-center gap-1.5 border-b border-white/10 px-3 pb-2 pt-2.5">
+      <span class="text-sm font-bold uppercase tracking-[0.08em] text-base-content">
+        FOUNDRY
+      </span>
+      <span class="ml-auto text-xs text-neutral-content">{@project_name || "project"}</span>
+    </div> --%>
+
+    <div class="flex shrink-0 gap-0.5 border-b border-white/10 px-2" role="tablist">
+      <button
+        class="fm-sidebar-tab cursor-pointer border-0 border-b-2 border-transparent bg-transparent px-2 py-2 text-xs font-medium tracking-[0.04em] text-neutral-content transition-colors hover:text-base-content data-[active=true]:border-primary data-[active=true]:text-secondary"
+        data-active={@sidebar_tab == :system_map}
+        phx-click="set_sidebar_tab"
+        phx-value-tab="system_map"
+      >
+        System Map
+      </button>
+      <%!-- <button
+        class="fm-sidebar-tab cursor-pointer border-0 border-b-2 border-transparent bg-transparent px-2 py-2 text-xs font-medium uppercase tracking-[0.04em] text-neutral-content transition-colors hover:text-base-content data-[active=true]:border-primary data-[active=true]:text-secondary"
+        data-active={@sidebar_tab == :compliance}
+        phx-click="set_sidebar_tab"
+        phx-value-tab="compliance"
+      >
+        Compliance
+      </button>
+      <button
+        class="fm-sidebar-tab cursor-pointer border-0 border-b-2 border-transparent bg-transparent px-2 py-2 text-xs font-medium uppercase tracking-[0.04em] text-neutral-content transition-colors hover:text-base-content data-[active=true]:border-primary data-[active=true]:text-secondary"
+        data-active={@sidebar_tab == :operations}
+        phx-click="set_sidebar_tab"
+        phx-value-tab="operations"
+      >
+        Operations
+      </button> --%>
+      <button
+        class="fm-sidebar-tab cursor-pointer border-0 border-b-2 border-transparent bg-transparent px-2 py-2 text-xs font-medium tracking-[0.04em] text-neutral-content transition-colors hover:text-base-content data-[active=true]:border-primary data-[active=true]:text-secondary"
+        data-active={@sidebar_tab == :test_coverage}
+        phx-click="set_sidebar_tab"
+        phx-value-tab="test_coverage"
+      >
+        Coverage
+      </button>
+      <button
+        class="fm-sidebar-tab cursor-pointer border-0 border-b-2 border-transparent bg-transparent px-2 py-2 text-xs font-medium tracking-[0.04em] text-neutral-content transition-colors hover:text-base-content data-[active=true]:border-primary data-[active=true]:text-secondary"
+        data-active={@feed_open and @feed_tab == :copilot}
+        phx-click="toggle_copilot_sidebar"
+      >
+        Copilot AI
+      </button>
+    </div>
+
+    <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <%= if @sidebar_tab == :system_map do %>
+        <input
+          class="fm-sidebar-search m-2 w-[calc(100%-1rem)] box-border rounded-field border border-white/10 bg-white/8 px-2 py-1.5 text-sm text-base-content outline-none backdrop-blur-sm focus:border-primary"
+          type="text"
+          placeholder="Filter…"
+          value={@filter_query}
+          phx-keyup="filter_nodes"
+          phx-debounce="200"
+        />
+        <div class="fm-node-list flex flex-col" id="fm-node-list">
+          <%= for {domain, nodes} <- @nodes_by_domain do %>
+            <div class="fm-domain-group flex items-center gap-1.5 px-3 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-neutral-content/50">
+              <span>{domain}</span>
+              <span class="h-px flex-1 bg-white/10"></span>
+            </div>
+            <%= for node <- nodes do %>
+              <button
+                class="fm-node-item group flex h-10 w-full cursor-pointer items-center gap-2 border-0 border-l-2 border-transparent bg-transparent px-3 text-left transition-colors hover:bg-white/8 data-[selected=true]:border-primary data-[selected=true]:bg-primary/12"
+                data-node-id={node["id"]}
+              >
+                <span
+                  class="fm-type-badge flex size-6 shrink-0 items-center justify-center text-[var(--badge-bg)]"
+                  style={type_badge_style(node["type"])}
+                >
+                  <.icon name={type_icon_name(node["type"])} class="size-5" />
+                </span>
+                <span class="min-w-0 flex-1 truncate text-sm text-neutral-content group-data-[selected=true]:text-base-content">
+                  {display_node_label(node["id"])}
+                </span>
+              </button>
+            <% end %>
+          <% end %>
+        </div>
+      <% end %>
+      <%= if @sidebar_tab == :compliance do %>
+        <div class="p-4 text-center text-xs text-neutral-content">
+          Compliance view coming soon
+        </div>
+      <% end %>
+      <%= if @sidebar_tab == :operations do %>
+        <div class="p-4 text-center text-xs text-neutral-content">
+          Operations view coming soon
+        </div>
+      <% end %>
+      <%= if @sidebar_tab == :test_coverage do %>
+        <div class="flex flex-col gap-3 overflow-y-auto p-3">
+          <% overall = @domain_coverage[:overall_score] || 0 %>
+          <% below_threshold = @domain_coverage[:below_threshold] %>
+          <% uncovered_count = Enum.count(Map.get(@coverage || %{}, :uncovered_node_ids, [])) %>
+
+          <%= if @coverage_filtered_node do %>
+            <div class="rounded-box border border-secondary/30 bg-secondary/10 p-3">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <p class="text-xs font-semibold uppercase tracking-[0.12em] text-secondary">
+                    Scenario Filter
+                  </p>
+                  <p class="mt-1 break-words text-sm text-base-content">
+                    Showing scenarios covering
+                    <span class="font-mono text-secondary">{@coverage_filtered_node}</span>
+                  </p>
+                  <p class="mt-1 break-words text-xs text-neutral-content">
+                    {@selected_node_scenario_count || 0} matching scenarios from `report.node_index`
+                  </p>
+                </div>
+                <button
+                  class="shrink-0 rounded border border-secondary/30 bg-base-100/70 px-2 py-1 text-[11px] font-medium text-secondary transition-colors hover:bg-base-100"
+                  phx-click="clear_node_filter"
+                >
+                  Show All
+                </button>
+              </div>
+            </div>
+          <% end %>
+
+          <%= if @scenario_warnings != [] do %>
+            <div class="rounded-box border border-warning/40 bg-warning/10 p-3">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs font-semibold uppercase tracking-[0.12em] text-warning">
+                  Trace Warnings
+                </p>
+                <span class="rounded bg-warning/20 px-1.5 py-0.5 text-[10px] font-mono text-warning">
+                  {Enum.count(@scenario_warnings)}
+                </span>
+              </div>
+              <div class="mt-2 space-y-1">
+                <%= for warning <- Enum.take(@scenario_warnings, 3) do %>
+                  <p class="text-xs text-warning/90">{warning}</p>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+
+          <div class="rounded-box border border-white/10 bg-white/6 p-3">
+            <p class="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-content">
+              Domain Coverage Score
+            </p>
+            <div class="mt-2 space-y-2">
+              <%= for {domain_name, score} <- @domain_coverage |> Enum.reject(fn {key, _value} -> key in [:overall_score, :below_threshold] end) |> Enum.sort_by(fn {_name, value} -> -value end) |> Enum.take(4) do %>
+                <div class="flex items-center gap-2">
+                  <span class="min-w-[70px] text-xs font-medium text-neutral-content">
+                    {String.capitalize(to_string(domain_name))}
+                  </span>
+                  <div class="h-2 flex-1 overflow-hidden rounded-full bg-white/8">
+                    <div
+                      class="h-full bg-secondary transition-all"
+                      style={"width: #{min(max(score, 0), 100)}%"}
+                    >
+                    </div>
+                  </div>
+                  <span class="w-10 text-right text-xs text-neutral-content">
+                    {round(min(max(score, 0), 100))}%
+                  </span>
+                </div>
+              <% end %>
+            </div>
+            <div class="mt-3 border-t border-white/10 pt-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-base-content">Overall Score</span>
+                <span class={[
+                  "text-sm font-bold",
+                  if(below_threshold, do: "text-warning", else: "text-success")
+                ]}>
+                  {Float.round(overall, 1)}%
+                </span>
+              </div>
+              <%= if below_threshold do %>
+                <p class="mt-1 text-xs text-warning">
+                  Below 80% target
+                </p>
+              <% end %>
+              <%= if uncovered_count > 0 do %>
+                <p class="mt-1 text-xs text-neutral-content">
+                  {uncovered_count} nodes still have no scenario coverage
+                </p>
+              <% end %>
+            </div>
+          </div>
+
+          <div class="space-y-2">
+            <%= if @scenarios_by_category == %{} do %>
+              <div class="rounded-box border border-dashed border-base-300/70 bg-base-200/30 p-4 text-sm text-neutral-content">
+                No extracted scenarios cover this node yet.
+              </div>
+            <% end %>
+
+            <%= for {category, scenarios} <- @scenarios_by_category do %>
+              <details class="group" open>
+                <summary class="flex cursor-pointer items-center gap-2 rounded-box border border-white/10 bg-white/6 px-3 py-2 select-none">
+                  <span class="text-xs font-semibold uppercase tracking-[0.08em] text-neutral-content/70">
+                    {String.upcase(to_string(category))} ({Enum.count(scenarios)})
+                  </span>
+                </summary>
+                <div class="space-y-1 p-2">
+                  <%= for scenario <- scenarios do %>
+                    <button
+                      class="group/item flex w-full flex-col gap-1 rounded-box border border-transparent bg-base-300/30 p-2 text-left transition-colors hover:bg-base-300/60 data-[selected=true]:border-primary data-[selected=true]:bg-primary/10"
+                      data-selected={@selected_scenario_id == scenario.id}
+                      phx-click="select_scenario"
+                      phx-value-id={scenario.id}
+                    >
+                      <span class="text-xs font-medium text-base-content">
+                        {scenario.name}
+                      </span>
+                      <div class="flex flex-wrap items-center gap-1">
+                        <%= if scenario.level do %>
+                          <span class="inline-block rounded border border-info/30 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-info">
+                            {scenario.level}
+                          </span>
+                        <% end %>
+                        <span class="inline-block rounded border border-base-300/70 px-1.5 py-0.5 text-[10px] text-base-content/65">
+                          {Enum.count(scenario.nodes)} covered {if Enum.count(scenario.nodes) == 1,
+                            do: "node",
+                            else: "nodes"}
+                        </span>
+                        <%= if duration_ms = @slow_test_durations[scenario.id] do %>
+                          <span class="inline-block rounded border border-secondary/30 bg-secondary/10 px-1.5 py-0.5 font-mono text-[10px] text-secondary">
+                            {duration_ms}ms
+                          </span>
+                        <% end %>
+                      </div>
+                      <%= if not Enum.empty?(scenario.compliance_links) do %>
+                        <div class="flex flex-wrap gap-1">
+                          <%= for link <- scenario.compliance_links do %>
+                            <span class="inline-block rounded bg-warning/20 px-1.5 py-0.5 font-mono text-[10px] text-warning">
+                              {link}
+                            </span>
+                          <% end %>
+                        </div>
+                      <% end %>
+                    </button>
+                  <% end %>
+                </div>
+              </details>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+
+    <div
+      class="absolute inset-y-0 right-0 w-1 cursor-col-resize bg-transparent transition-colors hover:bg-primary"
+      id="sidebar-resize-handle"
+    >
+    </div>
+  </aside>
+
+  <div class="flex min-w-0 flex-1 flex-col">
+    <%!-- <div class="pointer-events-none absolute inset-x-0 top-0 z-20 flex h-11 items-center px-3">
+      <div class="pointer-events-auto ml-[calc(var(--foundry-sidebar-width,240px)+12px)] flex items-center gap-1 rounded-2xl border border-white/10 bg-[color:color-mix(in_oklch,var(--color-base-200)_42%,transparent)] px-2 py-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.24)] backdrop-blur-2xl">
+        <button
+          class="flex cursor-pointer items-center gap-1 rounded-selector border border-transparent bg-transparent px-[7px] py-1 text-xs text-neutral-content transition-colors hover:bg-base-300 hover:text-base-content data-[active=true]:border-neutral/80 data-[active=true]:bg-base-300 data-[active=true]:text-base-content"
+          data-active={@lens == :default}
+          phx-click="set_lens"
+          phx-value-lens="default"
+        >
+          <span class="size-[5px] shrink-0 rounded-full bg-secondary"></span> Default
+        </button>
+        <button
+          class="flex cursor-pointer items-center gap-1 rounded-selector border border-transparent bg-transparent px-[7px] py-1 text-xs text-neutral-content transition-colors hover:bg-base-300 hover:text-base-content data-[active=true]:border-neutral/80 data-[active=true]:bg-base-300 data-[active=true]:text-base-content"
+          data-active={@lens == :trc}
+          phx-click="set_lens"
+          phx-value-lens="trc"
+        >
+          <span class="size-[5px] shrink-0 rounded-full bg-warning"></span> Scenario
+        </button>
+        <button
+          class="flex cursor-pointer items-center gap-1 rounded-selector border border-transparent bg-transparent px-[7px] py-1 text-xs text-neutral-content transition-colors hover:bg-base-300 hover:text-base-content data-[active=true]:border-neutral/80 data-[active=true]:bg-base-300 data-[active=true]:text-base-content"
+          data-active={@lens == :auth}
+          phx-click="set_lens"
+          phx-value-lens="auth"
+        >
+          <span class="size-[5px] shrink-0 rounded-full bg-error"></span> Auth
+        </button>
+        <button
+          class="flex cursor-pointer items-center gap-1 rounded-selector border border-transparent bg-transparent px-[7px] py-1 text-xs text-neutral-content transition-colors hover:bg-base-300 hover:text-base-content data-[active=true]:border-neutral/80 data-[active=true]:bg-base-300 data-[active=true]:text-base-content"
+          data-active={@lens == :cfg}
+          phx-click="set_lens"
+          phx-value-lens="cfg"
+        >
+          <span class="size-[5px] shrink-0 rounded-full bg-purple-400"></span> Config
+        </button>
+        <div class="min-w-4"></div>
+        <button
+          class="cursor-pointer rounded-selector border border-transparent bg-transparent px-2 py-1 text-xs text-neutral-content transition-colors hover:bg-base-300 hover:text-base-content data-[active=true]:border-primary/30 data-[active=true]:bg-primary/10 data-[active=true]:text-secondary"
+          data-active={@system_map_view == :table}
+          phx-click="toggle_view"
+        >
+          {if @system_map_view == :graph, do: "Graph", else: "Table"}
+        </button>
+        <button
+          class="flex cursor-pointer items-center gap-2 rounded-selector border border-transparent bg-transparent px-2 py-1 text-xs font-medium text-neutral-content transition-colors hover:border-primary/20 hover:bg-base-300 hover:text-base-content"
+          phx-click="toggle_feed"
+          title="Copilot panel ⌘\"
+        >
+          <span class="size-[6px] shrink-0 rounded-full bg-secondary"></span> Copilot
+        </button>
+      </div>
+    </div> --%>
+
+    <div class="relative min-h-0 flex-1">
+      <div
+        class="fm-drawer absolute inset-y-3 left-0 z-30 flex flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[color:color-mix(in_oklch,var(--color-base-200)_48%,transparent)] shadow-[0_24px_64px_rgba(0,0,0,0.32)] backdrop-blur-2xl transition-[width] duration-200"
+        id="fm-drawer"
+        data-open={to_string(@drawer_open)}
+        style={"left: calc(var(--foundry-sidebar-width, 240px) + 16px); " <> panel_width_style("--foundry-drawer-width", @drawer_open, 380)}
+      >
+        <div class="flex shrink-0 items-start gap-3 border-b border-white/10 px-4 py-4">
+          <div class="min-w-0 flex-1">
+            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-neutral-content/60">
+              Details
+            </p>
+            <h2
+              class="mt-1 truncate text-xl font-semibold text-base-content"
+              id="fm-drawer-title"
+              phx-update="ignore"
+            >
+            </h2>
+            <p
+              class="mt-1 text-sm text-neutral-content/80"
+              id="fm-drawer-subtitle"
+              phx-update="ignore"
+            >
+            </p>
+          </div>
+          <button
+            class="hidden flex items-center gap-1.5 rounded-lg border border-info/30 bg-info/10 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-info transition hover:border-info/50 hover:bg-info/20"
+            id="fm-drawer-preview-btn"
+            phx-update="ignore"
+            type="button"
+          >
+            Preview
+          </button>
+          <button
+            class="ml-auto flex size-8 cursor-pointer items-center justify-center rounded-selector border-0 bg-transparent text-base text-neutral-content transition-colors hover:bg-white/8 hover:text-base-content"
+            id="fm-drawer-close"
+          >
+            ×
+          </button>
+        </div>
+        <div
+          class="min-h-0 flex-1 overflow-y-auto p-4"
+          id="fm-panel-details"
+          phx-update="ignore"
+        >
+        </div>
+        <div
+          class="absolute inset-y-0 right-0 w-1 cursor-col-resize bg-transparent transition-colors hover:bg-primary"
+          id="drawer-resize-handle"
+        >
+        </div>
+      </div>
+
+      <div class="relative min-w-0 h-full overflow-hidden bg-base-100">
+        <%= if @context_json do %>
+          <div
+            id="system-map-metadata"
+            class="hidden"
+            data-uncovered-node-ids={Jason.encode!(@uncovered_node_ids || [])}
+            data-sidebar-tab={@sidebar_tab}
+            data-selected-node-id={@selected_id}
+          >
+          </div>
+          <div
+            phx-hook="SystemMap"
+            id="system-map"
+            data-context={@context_json}
+            data-preview-base-url={@preview_base_url}
+            phx-update="ignore"
+            class="size-full"
+          >
+            <div id="fm-hover-card" class="hidden"></div>
+          </div>
+        <% else %>
+          <div class="flex size-full items-center justify-center p-6">
+            <p class="text-base-content/60">
+              No modules found. Run <code>mix compile</code> in your project directory.
+            </p>
+          </div>
+        <% end %>
+      </div>
+    </div>
+  </div>
+
+
+  <div
+    class={[
+      "absolute inset-y-3 right-0 bottom-0 top-0 z-30 flex flex-col overflow-hidden border border-white/10 bg-[color:color-mix(in_oklch,var(--color-base-200)_52%,transparent)] backdrop-blur-2xl transition-transform transition-opacity duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform",
+      if(@feed_open,
+        do: "translate-x-0 opacity-100 pointer-events-auto",
+        else: "translate-x-full opacity-0 pointer-events-none"
+      )
+    ]}
+    id="fm-feed"
+    data-open={to_string(@feed_open)}
+    style={"width: var(--foundry-feed-width, 360px);"}
+  >
+    <div
+      class="absolute inset-y-0 left-0 w-1 cursor-col-resize bg-transparent transition-colors hover:bg-primary"
+      id="feed-resize-handle"
+    >
+    </div>
+    <div class="flex shrink-0 items-center px-3 py-2">
+      <div class="flex shrink-0">
+        <button
+          class="cursor-pointer px-3 py-1.5 text-[11px] text-neutral-content transition-colors hover:text-base-content data-[active=true]:border-primary data-[active=true]:text-base-content"
+          data-active={@feed_tab == :feed}
+          phx-click="set_feed_tab"
+          phx-value-tab="feed"
+        >
+          Feed
+        </button>
+        <button
+          class="cursor-pointer px-3 py-1.5 text-[11px] text-neutral-content transition-colors hover:text-base-content data-[active=true]:border-primary data-[active=true]:text-base-content"
+          data-active={@feed_tab == :copilot}
+          phx-click="set_feed_tab"
+          phx-value-tab="copilot"
+        >
+          Copilot
+        </button>
+      </div>
+      <button
+        class="flex size-7 cursor-pointer items-right justify-center rounded-selector border-0 bg-transparent text-neutral-content transition-colors hover:bg-base-300 hover:text-base-content"
+        phx-click="toggle_feed"
+      >
+        ×
+      </button>
+    </div>
+    <div class="min-h-0 flex-1 overflow-hidden">
+      <%= if @feed_tab == :feed do %>
+        <div class="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-3">
+          <div class="rounded-box border border-white/10 bg-white/6 p-3">
+            <p class="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-content">
+              Activity Feed
+            </p>
+            <p class="mt-2 text-sm leading-6 text-base-content">
+              Proposal cards and review activity will appear here.
+            </p>
+            <p class="mt-1 text-xs leading-5 text-neutral-content">
+              The Copilot tab now hosts the integrated project chat workspace.
+            </p>
+          </div>
+        </div>
+      <% else %>
+        <FoundryWeb.ChatComponents.studio_panel
+          messages={@messages}
+          chat_loading={@chat_loading}
+          error={@error}
+          project_root={@project_root}
+          show_system_context={@show_system_context}
+          system_context_prompt={@system_context_prompt}
+          system_context_error={@system_context_error}
+          selected_model={@selected_model}
+          model_catalog={@model_catalog}
+          llm_diagnostics={@llm_diagnostics}
+          chat_view={@chat_view}
+          activity_runs={@activity_runs}
+          selected_activity_run_id={@selected_activity_run_id}
+          session_digest={@session_digest}
+          input={@input}
+          last_session_summary_at={@last_session_summary_at}
+          open_session_ids={@open_session_ids}
+          active_session_id={@active_session_id}
+          sessions_by_id={@sessions_by_id}
+        />
+      <% end %>
+    </div>
+  </div>
+  </div>
+<% end %>
