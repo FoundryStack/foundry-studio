@@ -23,8 +23,8 @@ defmodule FoundryWeb.SystemMapLive do
     end
   end
 
-  defp should_mount_loading?(%{"repo_url" => u, "parent_dir" => d}, _active_project_root)
-       when u != "" and d != "",
+  defp should_mount_loading?(%{"repo_url" => u}, _active_project_root)
+       when u != "",
        do: true
 
   defp should_mount_loading?(
@@ -52,9 +52,22 @@ defmodule FoundryWeb.SystemMapLive do
     Application.get_env(:foundry_web, :current_project_root)
   end
 
-  defp start_project_action(%{"repo_url" => url, "parent_dir" => dir})
-       when url != "" and dir != "" do
+  defp start_project_action(%{"repo_url" => url} = params)
+       when url != "" do
+    dir =
+      if Foundry.RuntimeConfig.standalone?() do
+        params["parent_dir"] || System.user_home!()
+      else
+        cloud_projects_dir()
+      end
+
     Foundry.ProjectManager.clone_project(url, dir)
+  end
+
+  defp cloud_projects_dir do
+    dir = "/app/projects"
+    File.mkdir_p!(dir)
+    dir
   end
 
   defp start_project_action(%{"path" => path, "new_project" => "1", "project_name" => name})
@@ -153,11 +166,18 @@ defmodule FoundryWeb.SystemMapLive do
       hooks = Application.get_env(:foundry_web, :system_map_live_hooks, [])
       build_context = Keyword.get(hooks, :build_context, &ProjectContext.build/1)
 
-      # Ensure igaming ebin path is in the code path so modules can be loaded
-      ebin_path = Path.join([project_root, "_build", "dev", "lib", "igaming_ref", "ebin"])
-
-      if File.dir?(ebin_path) do
-        Code.append_path(ebin_path)
+      # Ensure project ebin paths are in the code path so modules can be loaded.
+      # Check all MIX_ENV build dirs since the studio may run in prod or dev.
+      for env <- ["prod", "dev", "test"] do
+        lib_dir = Path.join([project_root, "_build", env, "lib"])
+        if File.dir?(lib_dir) do
+          lib_dir
+          |> File.ls!()
+          |> Enum.each(fn app ->
+            ebin = Path.join([lib_dir, app, "ebin"])
+            if File.dir?(ebin), do: Code.append_path(ebin)
+          end)
+        end
       end
 
       project_name = Path.basename(project_root)

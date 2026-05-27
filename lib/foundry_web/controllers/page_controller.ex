@@ -3,25 +3,48 @@ defmodule FoundryWeb.PageController do
   alias Foundry.ProjectManager
 
   def preview_launch(conn, params) do
-    case Foundry.PreviewServer.get_status() do
-      {:ok, %{state: state}} when state not in [:starting, :running] ->
-        Foundry.PreviewServer.start_preview(preview_project_root())
+    # Don't start the preview while ProjectManager is still compiling dependencies —
+    # mix holds the build lock during compile, so a concurrent mix phx.server would
+    # block on the lock and produce no output, triggering a false timeout.
+    project_manager_ready? = ProjectManager.get_status().state == :ready
 
-      _ ->
-        :ok
+    if project_manager_ready? do
+      case Foundry.PreviewServer.get_status() do
+        {:ok, %{state: :idle}} ->
+          Foundry.PreviewServer.start_preview(preview_project_root())
+
+        _ ->
+          :ok
+      end
     end
 
     render(conn, :preview_launch, target_url: preview_target_url(params))
   end
 
   def preview_status(conn, _params) do
+    pm_status = ProjectManager.get_status()
+
+    # If the project manager just became ready and nothing is running yet, kick off the preview.
+    # This handles the case where the user loaded /preview-launch while the project was still
+    # compiling — the page polls this endpoint and we start the preview as soon as it's safe.
+    if pm_status.state == :ready do
+      case Foundry.PreviewServer.get_status() do
+        {:ok, %{state: :idle}} ->
+          Foundry.PreviewServer.start_preview(preview_project_root())
+
+        _ ->
+          :ok
+      end
+    end
+
     status =
       case Foundry.PreviewServer.get_status() do
         {:ok, status} -> status
         {:error, _reason} -> %{state: :idle, output: "", last_error: "Preview server unavailable"}
       end
 
-    json(conn, status)
+    # Merge project_manager_state so the browser can show "Compiling project…" while waiting.
+    json(conn, Map.put(status, :project_manager_state, pm_status.state))
   end
 
   def project_onboarding(conn, %{"path" => path}) do
@@ -70,7 +93,7 @@ defmodule FoundryWeb.PageController do
 
   def project_manager(conn, _params) do
     render(conn, :project_manager,
-      can_open_local_dir: System.get_env("FOUNDRY_STANDALONE", "0") == "1",
+      can_open_local_dir: Foundry.RuntimeConfig.standalone?(),
       recent_projects: ProjectManager.recent_projects()
     )
   end
@@ -78,7 +101,7 @@ defmodule FoundryWeb.PageController do
   def healthz(conn, _params) do
     json(conn, %{
       ok: true,
-      mode: System.get_env("FOUNDRY_STANDALONE", "0") == "1" && "standalone" || "local",
+      mode: Foundry.RuntimeConfig.standalone?() && "standalone" || "local",
       version: to_string(Application.spec(:foundry, :vsn) || "0.0.0")
     })
   end
@@ -103,33 +126,41 @@ defmodule FoundryWeb.PageController do
     end
   end
 
-  defp preview_target_url(_params), do: "http://localhost:4001/"
+  defp preview_target_url(_params), do: Foundry.PreviewServer.preview_base_url(preview_project_root()) <> "/"
 
   defp preview_project_root do
-    FoundryWeb.ChatConfig.project_root()
+    Foundry.ProjectManager.current_project_root()
   end
 
   defp validate_preview_target(target) do
-    with %URI{} = uri <- URI.parse(target),
-         true <- preview_host?(uri.host),
-         true <- is_integer(uri.port) do
-      {:ok, URI.to_string(%{uri | query: nil, fragment: nil, path: normalize_route(uri.path)})}
+    # Accept a server-relative path (no traversal) or a full URL on an allowed host.
+    if String.starts_with?(target, "/") and not String.contains?(target, "..") do
+      {:ok, normalize_route(target)}
     else
-      _ -> :error
+      with %URI{} = uri <- URI.parse(target),
+           true <- preview_host?(uri.host),
+           true <- is_integer(uri.port) or uri.scheme in ["http", "https"] do
+        {:ok, URI.to_string(%{uri | query: nil, fragment: nil, path: normalize_route(uri.path)})}
+      else
+        _ -> :error
+      end
     end
   end
 
   defp validate_preview_base(base) do
     with %URI{} = uri <- URI.parse(base),
-         true <- preview_host?(uri.host),
-         true <- is_integer(uri.port) do
+         true <- preview_host?(uri.host) do
       uri
     else
       _ -> :error
     end
   end
 
-  defp preview_host?(host), do: host in ["localhost", "127.0.0.1"]
+  defp preview_host?(host) do
+    allowed = ["localhost", "127.0.0.1"]
+    preview_host = if Foundry.RuntimeConfig.standalone?(), do: nil, else: Foundry.RuntimeConfig.preview_host()
+    host in allowed or (preview_host != nil and host == preview_host)
+  end
 
   defp normalize_route("/" <> _ = route), do: route
   defp normalize_route(route) when is_binary(route), do: "/" <> route
