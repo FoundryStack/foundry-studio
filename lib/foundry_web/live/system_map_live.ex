@@ -262,7 +262,7 @@ defmodule FoundryWeb.SystemMapLive do
             if connected?(socket) do
               assign(socket, loading: false, loading_visible: false)
             else
-              socket |> assign(loading_visible: false) |> maybe_schedule_finish_loading()
+              maybe_schedule_finish_loading(socket)
             end
 
           {:ok, socket}
@@ -408,6 +408,11 @@ defmodule FoundryWeb.SystemMapLive do
   def handle_event("send_message", params, socket) do
     socket = assign(socket, :feed_open, true)
     ChatSession.handle_event("send_message", params, socket)
+  end
+
+  @impl true
+  def handle_event("cancel_message", params, socket) do
+    ChatSession.handle_event("cancel_message", params, socket)
   end
 
   @impl true

@@ -13,26 +13,43 @@ defmodule FoundryWeb.Router do
   pipeline :mcp do
     plug :accepts, ["json"]
     plug :mcp_auth
+    plug :set_mcp_project_context
+    plug FoundryWeb.McpToolsHandler
   end
 
   defp mcp_auth(conn, _opts) do
-    case System.get_env("FOUNDRY_MCP_API_KEY") do
-      nil ->
-        # No key configured — allow all requests (dev mode only)
-        conn
-
-      expected_key ->
-        with ["Bearer " <> token] <- get_req_header(conn, "authorization"),
-             true <- token == expected_key do
-          conn
-        else
-          _ ->
+    # DCR endpoints allow registration without auth
+    if dcr_endpoint?(conn) do
+      conn
+    else
+      # Tool/resource endpoints require valid DCR token
+      case get_req_header(conn, "authorization") do
+        ["Bearer " <> token] ->
+          if FoundryWeb.McpDcrController.valid_token?(token) do
+            conn
+          else
             conn
             |> put_resp_header("www-authenticate", "Bearer")
             |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))
             |> halt()
-        end
+          end
+
+        _ ->
+          conn
+          |> put_resp_header("www-authenticate", "Bearer")
+          |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))
+          |> halt()
+      end
     end
+  end
+
+  defp dcr_endpoint?(conn) do
+    conn.request_path =~ ~r{/(register|\.well-known/oauth2-configuration)$}
+  end
+
+  defp set_mcp_project_context(conn, _opts) do
+    project_root = FoundryWeb.ChatConfig.project_root()
+    Ash.PlugHelpers.set_context(conn, %{project_root: project_root})
   end
 
   live_session :default, on_mount: [Foundry.TestScenario.LiveViewHook] do
@@ -56,11 +73,24 @@ defmodule FoundryWeb.Router do
     get "/preview-status", PageController, :preview_status
   end
 
+  scope "/.well-known" do
+    pipe_through :browser
+
+    get "/mcp.json", FoundryWeb.WellKnownController, :mcp_discovery
+    get "/oauth-authorization-server", FoundryWeb.McpDcrController, :well_known
+  end
+
   # MCP server — exposes Foundry.Context tools to external agents
   # (Claude Code, Cursor, Codex CLI, etc.)
+  # Agents use OAuth 2.0 Dynamic Client Registration to obtain tokens at runtime
   scope "/foundry/mcp" do
     pipe_through :mcp
 
+    # DCR endpoints (no auth required for registration)
+    post "/register", FoundryWeb.McpDcrController, :register
+    get "/.well-known/oauth2-configuration", FoundryWeb.McpDcrController, :well_known
+
+    # Fallback to AshAi for other endpoints
     forward "/", AshAi.Mcp.Router,
       tools: [
         :project_status,
@@ -69,8 +99,10 @@ defmodule FoundryWeb.Router do
         :submit_proposal,
         :proposal_status,
         :run_lint,
-        :read_doc
+        :read_doc,
+        :edit_file
       ],
+      mcp_resources: :*,
       protocol_version_statement: "2024-11-05",
       otp_app: :foundry
   end
